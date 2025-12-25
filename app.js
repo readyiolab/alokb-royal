@@ -1,0 +1,106 @@
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
+
+const authModule = require('./modules/auth');
+const adminModule = require('./modules/admin');
+const twoFAModule = require('./modules/2fa'); 
+const cashierModule = require('./modules/cashier');
+
+const transactionModule = require('./modules/transcation');
+const playerModule = require('./modules/player');
+const creditModule = require("./modules/credit")
+const kycModule = require('./modules/kyc');
+
+// NEW MODULES
+const staffModule = require('./modules/staff');
+const dealerModule = require('./modules/dealer');
+const rakebackModule = require('./modules/rakeback');
+const expenseModule = require('./modules/expense');
+const floorManagerModule = require('./modules/floor-manager');
+
+const playerRoutes = require('./modules/player-auth/routes/player.routes');
+const whatsappRoutes = require('./routes/whatsapp.routes');
+const { errorHandler } = require('./middleware/error.middleware');
+
+const app = express();
+
+// Middleware
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://royalflush.red',
+  'https://www.royalflush.red'
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow server-to-server & tools like Postman
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+// Body parsers
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Import all modules as routers
+app.use('/api/auth', authModule.routes);
+app.use('/api/admin', adminModule);
+app.use('/api/2fa', twoFAModule.routes); 
+app.use('/api/cashier', cashierModule.routes);
+app.use('/api/cashier/confirmations', cashierModule.confirmationRoutes);
+app.use('/api/transactions', transactionModule.routes);
+app.use('/api/players', playerModule.routes);
+app.use('/api/credit',creditModule.routes)
+app.use('/api/kyc', kycModule);
+
+// NEW MODULE ROUTES
+app.use('/api/staff', staffModule.routes);
+app.use('/api/dealers', dealerModule.routes);
+app.use('/api/rakeback', rakebackModule.routes);
+app.use('/api/expenses', expenseModule.routes);
+app.use('/api/floor-manager', floorManagerModule);
+
+app.use('/api/player', playerRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
+
+
+
+
+
+
+// Start cron jobs
+const { startKYCReminderCron } = require('./cron/kycReminderCron'); // NEW
+startKYCReminderCron();
+
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Royal Flush API is running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.originalUrl} not found`
+  });
+});
+
+// Error handler (must be last)
+app.use(errorHandler);
+
+module.exports = app;
