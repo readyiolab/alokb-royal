@@ -12,6 +12,7 @@ class Database {
     this.host = dbHost;
     this.username = dbUser;
     this.password = dbPass;
+
     this.database = dbName;
     this.conn = mysql.createConnection({
       host: this.host,

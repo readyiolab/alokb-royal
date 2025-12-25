@@ -11,11 +11,14 @@ const dotenvConfig = {
   port: process.env.PORT || 5000,
 
   // Database
-  dbHost: process.env.DB_HOST,
-  dbUser: process.env.DB_USER,
-  dbPass: process.env.DB_PASS,
-  dbName: process.env.DB_NAME,
-  dbPort: process.env.DB_PORT || 3306,
+  // Database
+dbHost: process.env.DB_HOST,
+dbUser: process.env.DB_USER,
+dbPass: process.env.DB_PASSWORD,
+dbName: process.env.DB_NAME,
+dbPort: process.env.DB_PORT || 3306,
+
+  
 
   // JWT
   jwtSecret: process.env.JWT_SECRET,
