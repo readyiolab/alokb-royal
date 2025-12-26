@@ -121,7 +121,14 @@ class DealerService {
    * - Chips are returned to cashier (full value)
    * - 50% of chip value is paid to dealer in cash
    */
-  async recordDealerTip(data, userId) {
+/**
+ * Record Dealer Tip
+ * - Dealer receives chips as tips from players
+ * - Chips are returned to cashier (full value)
+ * - 50% of chip value is paid to dealer in cash
+ * - ✅ Uses secondary wallet first, then primary if needed
+ */
+async recordDealerTip(data, userId) {
   const session = await cashierService.getTodaySession();
   if (!session) {
     throw new Error('No active session found');
@@ -146,12 +153,20 @@ class DealerService {
   const cashPercentage = (data.cash_percentage || 50) / 100;
   const cashToDealer = totalChipValue * cashPercentage;
 
-  // ✅ Check secondary wallet availability
+  // ✅ Check BOTH wallets for availability
   const secondaryAvailable = parseFloat(session.secondary_wallet) || 0;
-  
-  if (cashToDealer > secondaryAvailable) {
-    throw new Error(`Insufficient funds in secondary wallet. Need ₹${cashToDealer}, Available: ₹${secondaryAvailable}`);
+  const primaryAvailable = parseFloat(session.primary_wallet) || 0;
+  const totalAvailable = secondaryAvailable + primaryAvailable;
+
+  if (cashToDealer > totalAvailable) {
+    throw new Error(`Insufficient funds. Need ₹${cashToDealer}, Available: ₹${totalAvailable} (Primary: ₹${primaryAvailable}, Secondary: ₹${secondaryAvailable})`);
   }
+
+  // ✅ Payment split - use secondary first, then primary for remaining
+  const paidFromSecondary = Math.min(cashToDealer, secondaryAvailable);
+  const paidFromPrimary = cashToDealer - paidFromSecondary;
+  const paidFromWallet = paidFromSecondary > 0 && paidFromPrimary > 0 ? 'both' : 
+                         paidFromSecondary > 0 ? 'secondary' : 'primary';
 
   // Create tip record
   const result = await db.insert('tbl_dealer_tips', {
@@ -165,30 +180,50 @@ class DealerService {
     chips_returned_value: totalChipValue,
     cash_paid_to_dealer: cashToDealer,
     cash_percentage: data.cash_percentage || 50,
-    paid_from_wallet: 'secondary',
+    paid_from_wallet: paidFromWallet,
+    primary_amount: paidFromPrimary,
+    secondary_amount: paidFromSecondary,
     notes: data.notes || null,
     recorded_by: userId
   });
 
-  // ✅ FIX: Chips INCREASE in cashier inventory (dealer returns chips)
+  // ✅ Chips INCREASE in cashier inventory (dealer returns chips)
   await cashierService.updateChipInventory(
     session.session_id,
     chipBreakdown,
-    false // receiving chips back = chips_current INCREASES
+    false // receiving chips back
   );
 
-  // ✅ FIX: Deduct cash ONLY from secondary wallet
-  await db.update('tbl_daily_sessions', {
-    secondary_wallet: secondaryAvailable - cashToDealer,
+  // ✅ Deduct cash from appropriate wallet(s)
+  const walletUpdates = {
     total_dealer_tips: (parseFloat(session.total_dealer_tips) || 0) + totalChipValue,
     total_dealer_cash_paid: (parseFloat(session.total_dealer_cash_paid) || 0) + cashToDealer
-  }, 'session_id = ?', [session.session_id]);
+  };
+
+  if (paidFromSecondary > 0) {
+    walletUpdates.secondary_wallet = secondaryAvailable - paidFromSecondary;
+  }
+  if (paidFromPrimary > 0) {
+    walletUpdates.primary_wallet = primaryAvailable - paidFromPrimary;
+  }
+
+  await db.update('tbl_daily_sessions', walletUpdates, 'session_id = ?', [session.session_id]);
 
   // Update dealer stats
   await db.query(
     'UPDATE tbl_dealers SET total_tips_received = total_tips_received + ?, total_cash_paid = total_cash_paid + ? WHERE dealer_id = ?',
     [totalChipValue, cashToDealer, data.dealer_id]
   );
+
+  // Build payment message
+  let paymentMsg = '';
+  if (paidFromWallet === 'both') {
+    paymentMsg = `₹${paidFromSecondary} from secondary + ₹${paidFromPrimary} from primary`;
+  } else if (paidFromWallet === 'secondary') {
+    paymentMsg = `₹${cashToDealer} from secondary wallet`;
+  } else {
+    paymentMsg = `₹${cashToDealer} from primary wallet`;
+  }
 
   return {
     tip_id: result.insert_id,
@@ -197,7 +232,10 @@ class DealerService {
     chip_amount: totalChipValue,
     chips_returned: totalChipValue,
     cash_paid: cashToDealer,
-    message: `✅ Dealer tip recorded. ₹${totalChipValue} chips returned to cashier. ₹${cashToDealer} cash paid from secondary wallet.`
+    paid_from: paidFromWallet,
+    primary_deducted: paidFromPrimary,
+    secondary_deducted: paidFromSecondary,
+    message: `✅ Dealer tip recorded. ₹${totalChipValue} chips returned. ${paymentMsg} paid to ${dealer.dealer_name}.`
   };
 }
 
