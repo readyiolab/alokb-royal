@@ -56,12 +56,12 @@ class DealerService {
         
         if (dealer.dealer_status === 'on_table' && dealer.shift_ends_at) {
           const shiftEndsAt = new Date(dealer.shift_ends_at);
-          shiftRemainingSeconds = Math.floor((shiftEndsAt - now) / 1000);
+          shiftRemainingSeconds = Math.max(0, Math.floor((shiftEndsAt - now) / 1000));  // ✅ FIX: Add Math.max(0) to prevent negative
           
           // Calculate elapsed from shift start
           const shiftStartTime = dealer.current_shift_started_at || dealer.shift_start_time;
           if (shiftStartTime) {
-            shiftElapsedSeconds = Math.floor((now - new Date(shiftStartTime)) / 1000);
+            shiftElapsedSeconds = Math.max(0, Math.floor((now - new Date(shiftStartTime)) / 1000));
           }
         }
         
@@ -72,6 +72,12 @@ class DealerService {
           breakRemainingSeconds = Math.max(0, Math.floor((breakEndsAt - now) / 1000));
         }
         
+        // ✅ NEW: Handle paused shift time - use paused remaining instead of calculating
+        let displayShiftRemainingSeconds = shiftRemainingSeconds;
+        if (dealer.dealer_status === 'on_break' && dealer.shift_timer_status === 'paused') {
+          displayShiftRemainingSeconds = Math.max(0, dealer.shift_paused_remaining_seconds || 0);
+        }
+        
         return {
           dealer_id: dealer.dealer_id,
           dealer_code: dealer.dealer_code,
@@ -80,7 +86,7 @@ class DealerService {
           shift_status: dealer.shift_status,
           available: dealer.dealer_status === 'available',
           
-          assigned_table: dealer.assigned_table_id ? {
+          assigned_table: dealer.assigned_table_id && dealer.dealer_status !== 'available' ? {
             table_id: dealer.assigned_table_id,
             table_number: dealer.table_number,
             table_name: dealer.table_name
@@ -92,7 +98,7 @@ class DealerService {
           shift_ends_at: dealer.shift_ends_at,
           shift_remaining_seconds: shiftRemainingSeconds,
           shift_elapsed_seconds: shiftElapsedSeconds,
-          shift_timer_status: dealer.shift_timer_status,
+          shift_timer_status: dealer.dealer_status === 'on_table' ? 'counting' : (dealer.shift_timer_status || ''),  // ✅ FIX: Default to 'counting' if on_table and empty
           
           // ✅ BREAK FIELDS
           break_started_at: dealer.break_started_at,
@@ -101,7 +107,7 @@ class DealerService {
           break_remaining_seconds: breakRemainingSeconds,
           
           // ✅ PAUSED STATE (for resume)
-          shift_paused_remaining_seconds: dealer.shift_paused_remaining_seconds || 0,
+          shift_paused_remaining_seconds: (dealer.dealer_status === 'on_table' ? 0 : displayShiftRemainingSeconds),  // ✅ FIX: Return 0 when on_table, paused value only when on_break
           
           // ✅ ALERT FLAGS
           is_shift_ending: shiftRemainingSeconds > 0 && shiftRemainingSeconds <= 300, // 5 min warning
@@ -179,7 +185,7 @@ class DealerService {
   }
 
   /**
-   * ✅ SEND DEALER ON BREAK
+   * ✅ SEND DEALER ON BREAK - PAUSES SHIFT TIMER
    */
   async sendDealerOnBreak(dealerId, userId) {
     try {
@@ -209,16 +215,29 @@ class DealerService {
       }
 
       const tableId = shift.table_id; // ✅ Store table ID for auto-assignment
+      const now = new Date();
+
+      // ✅ CALCULATE REMAINING SHIFT TIME (pause calculation)
+      const shiftEndsAt = shift.shift_ends_at ? new Date(shift.shift_ends_at) : null;
+      let shiftPausedRemainingSeconds = shift.shift_paused_remaining_seconds || 0;
+      
+      if (shiftEndsAt && !shiftPausedRemainingSeconds) {
+        // Calculate remaining time from shift end
+        const remainingMs = shiftEndsAt - now;
+        shiftPausedRemainingSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+      }
 
       const breakDuration = 15; // 15 minutes
-      const breakStartedAt = new Date();
+      const breakStartedAt = now;
       const breakEndsAt = new Date(breakStartedAt.getTime() + breakDuration * 60 * 1000);
 
-      // Update shift
+      // Update shift - PAUSE the timer and save remaining time
       await db.update(
         'tbl_dealer_shifts',
         {
           shift_status: 'on_break',
+          shift_timer_status: 'paused',  // ✅ NEW: Mark timer as paused
+          shift_paused_remaining_seconds: shiftPausedRemainingSeconds,  // ✅ NEW: Store remaining time
           break_started_at: breakStartedAt,
           break_duration_minutes: breakDuration,
           break_ends_at: breakEndsAt
@@ -240,7 +259,7 @@ class DealerService {
         'tbl_tables',
         { dealer_id: null },
         'table_id = ?',
-        [shift.table_id]
+        [tableId]
       );
 
       // ✅ AUTO-ASSIGN ANOTHER DEALER
@@ -266,9 +285,10 @@ class DealerService {
       return {
         success: true,
         break_ends_at: breakEndsAt,
+        shift_paused_remaining_seconds: shiftPausedRemainingSeconds,
         auto_assigned_new_dealer: !!availableDealer,
         new_dealer_name: availableDealer?.dealer_name || null,
-        message: `${dealer.dealer_name} sent on break${availableDealer ? `. ${availableDealer.dealer_name} assigned to table.` : ''}`
+        message: `${dealer.dealer_name} sent on break. Shift timer paused with ${Math.floor(shiftPausedRemainingSeconds / 60)} minutes remaining.${availableDealer ? ` ${availableDealer.dealer_name} assigned to table.` : ''}`
       };
 
     } catch (error) {
@@ -277,10 +297,50 @@ class DealerService {
   }
 
   /**
-   * ✅ MARK DEALER AS AVAILABLE (After break)
+   * ✅ MARK DEALER AS AVAILABLE (After break) - RESUMES SHIFT TIMER
    */
   async markDealerAvailable(dealerId, userId) {
     try {
+      const session = await tableService.getCurrentSession();
+
+      // Get current shift with break info
+      const shift = await db.select(
+        'tbl_dealer_shifts',
+        '*',
+        'dealer_id = ? AND session_id = ? AND shift_status = "on_break"',
+        [dealerId, session.session_id]
+      );
+
+      if (!shift) {
+        throw new Error('Dealer is not on break');
+      }
+
+      const now = new Date();
+      
+      // ✅ RESUME TIMER: Calculate new shift end time from paused remaining seconds
+      let newShiftEndsAt = shift.shift_ends_at;
+      
+      if (shift.shift_paused_remaining_seconds > 0) {
+        // Resume from where it left off
+        newShiftEndsAt = new Date(now.getTime() + shift.shift_paused_remaining_seconds * 1000);
+      }
+
+      // Update shift - RESUME the timer
+      await db.update(
+        'tbl_dealer_shifts',
+        {
+          shift_status: 'available',
+          shift_timer_status: 'counting',  // ✅ NEW: Mark timer as counting/active
+          shift_ends_at: newShiftEndsAt,   // ✅ NEW: Update end time to resume from paused point
+          shift_paused_remaining_seconds: 0,  // ✅ NEW: Clear paused time
+          break_started_at: null,
+          break_ends_at: null
+        },
+        'shift_id = ?',
+        [shift.shift_id]
+      );
+
+      // Update dealer status
       await db.update(
         'tbl_dealers',
         { dealer_status: 'available' },
@@ -288,23 +348,12 @@ class DealerService {
         [dealerId]
       );
 
-      const session = await tableService.getCurrentSession();
-
-      // Update shift status
-      await db.update(
-        'tbl_dealer_shifts',
-        {
-          shift_status: 'available',
-          break_started_at: null,
-          break_ends_at: null
-        },
-        'dealer_id = ? AND session_id = ? AND shift_status = "on_break"',
-        [dealerId, session.session_id]
-      );
-
       return {
         success: true,
-        message: 'Dealer marked as available'
+        shift_resumed_at: now,
+        new_shift_ends_at: newShiftEndsAt,
+        remaining_shift_minutes: Math.floor(shift.shift_paused_remaining_seconds / 60),
+        message: `Dealer marked as available. Shift timer resumed from ${Math.floor(shift.shift_paused_remaining_seconds / 60)} minutes remaining.`
       };
     } catch (error) {
       throw error;

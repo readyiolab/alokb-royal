@@ -1,6 +1,8 @@
 // ============================================
 // FILE: modules/floor-manager/services/player.service.js
 // Business logic for player management with timing
+// 
+// UPDATED: Call time changed from 5 minutes to 60 minutes
 // ============================================
 
 const db = require('../../../config/database');
@@ -161,12 +163,6 @@ class PlayerService {
   /**
    * ✅ SET PLAYER ON BREAK
    * Timer: PAUSES play timer, starts break countdown
-   * 
-   * Logic:
-   * 1. Calculate seconds played so far (from seated_at + any accumulated time)
-   * 2. Store as played_time_before_break
-   * 3. Set status to 'on_break'
-   * 4. Start break countdown (15 minutes)
    */
   async setPlayerOnBreak(tablePlayerId, userId) {
     try {
@@ -251,11 +247,6 @@ class PlayerService {
   /**
    * ✅ RESUME FROM BREAK
    * Timer: RESUMES play timer
-   * 
-   * Logic:
-   * 1. Keep played_time_before_break as the accumulated time
-   * 2. Reset seated_at to NOW (new session start)
-   * 3. Frontend will calculate: played_time_before_break + (now - seated_at)
    */
   async resumeFromBreak(tablePlayerId, userId) {
     try {
@@ -329,12 +320,12 @@ class PlayerService {
   }
 
   /**
-   * ✅ CALL TIME
-   * Timer: Switches to COUNTDOWN (5 minutes default)
+   * ✅ CALL TIME - UPDATED TO 60 MINUTES
+   * Timer: Switches to COUNTDOWN (60 minutes default)
    * 
    * Rules:
    * - Player must have played minimum 120 minutes first
-   * - After call time, player gets 5 minute countdown
+   * - After call time, player gets 60 minute countdown
    * - When countdown reaches 0, player must leave
    */
   async callTime(tablePlayerId, userId) {
@@ -369,8 +360,8 @@ class PlayerService {
         throw new Error(`Player must play ${remainingMinutes} more minutes before calling time`);
       }
 
-      // Set call time (5 minutes countdown - can be adjusted)
-      const callTimeDuration = 5; // 5 minutes
+      // ✅ UPDATED: Set call time to 60 minutes (was 5 minutes)
+      const callTimeDuration = 60; // 60 minutes countdown
       const callTimeRequestedAt = now;
       const callTimeEndsAt = new Date(now.getTime() + callTimeDuration * 60 * 1000);
 
@@ -418,7 +409,7 @@ class PlayerService {
   /**
    * ✅ EXTEND CALL TIME
    */
-  async extendCallTime(tablePlayerId, additionalMinutes = 5, userId) {
+  async extendCallTime(tablePlayerId, additionalMinutes = 15, userId) {
     try {
       const player = await db.select(
         'tbl_table_players',
@@ -437,7 +428,7 @@ class PlayerService {
 
       const currentEndsAt = new Date(player.call_time_ends_at);
       const newEndsAt = new Date(currentEndsAt.getTime() + additionalMinutes * 60 * 1000);
-      const newDuration = (player.call_time_duration || 5) + additionalMinutes;
+      const newDuration = (player.call_time_duration || 60) + additionalMinutes;
 
       await db.update(
         'tbl_table_players',
@@ -473,7 +464,6 @@ class PlayerService {
 
   /**
    * ✅ REMOVE PLAYER FROM TABLE
-   * Calculates final play time
    */
   async removePlayer(tablePlayerId, userId, reason = null) {
     try {
@@ -781,9 +771,12 @@ class PlayerService {
       // Log transfer
       try {
         await db.insert('tbl_player_time_log', {
+          session_id: player.session_id,
           table_player_id: tablePlayerId,
+          player_id: player.player_id,
           event_type: 'transfer',
           event_time: now,
+          performed_by: userId,
           notes: `Transferred from Table ${oldTableId} Seat ${oldSeatNumber} to Table ${newTableId} Seat ${newSeatNumber}`,
         });
       } catch (logError) {
@@ -902,9 +895,9 @@ class PlayerService {
       throw error;
     }
   }
+
   /**
    * ✅ SYNC TABLE OCCUPIED SEATS
-   * Updates the counter to match actual player count (fixes desync issues)
    */
   async syncTableOccupiedSeats(tableId) {
     try {

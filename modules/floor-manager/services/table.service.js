@@ -480,12 +480,13 @@ class TableService {
         shift_status: 'on_table',
         
         // ✅ Timer fields for countdown
-        shift_timer_status: 'playing',
+        shift_timer_status: 'counting',  // ✅ FIX: Should be 'counting' not 'playing'
         shift_start_time: now,
         current_shift_started_at: now,
         shift_duration_minutes: shiftDuration,
         shift_duration_remaining_seconds: shiftDuration * 60,
         shift_ends_at: shiftEndsAt,
+        shift_paused_remaining_seconds: 0,  // ✅ NEW: Initialize to 0 when assigned
         
         assigned_by: userId,
         last_timer_update: now
@@ -547,6 +548,7 @@ class TableService {
         'tbl_dealer_shifts',
         {
           shift_status: 'on_break',
+          shift_timer_status: 'paused',  // ✅ NEW: Mark timer as paused
           break_started_at: breakStartedAt,
           break_duration_minutes: breakDuration,
           break_ends_at: breakEndsAt,
