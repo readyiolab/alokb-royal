@@ -1,6 +1,9 @@
 // ============================================
 // FILE: modules/floor-manager/services/table.service.js
 // Business logic for table management
+//
+// ✅ FIX: assignDealerToTable now checks for paused shift time
+//    and RESUMES from there instead of starting new shift
 // ============================================
 
 const db = require('../../../config/database');
@@ -120,7 +123,6 @@ class TableService {
       }
 
       // Get all players for all tables in one query (performance optimization)
-      // ✅ Include all timer-related fields (only columns that exist in DB)
       const allPlayers = await db.queryAll(
         `SELECT 
           tp.*,
@@ -159,7 +161,7 @@ class TableService {
         const allSeats = Array.from({ length: table.max_seats }, (_, i) => i + 1);
         const emptySeats = allSeats.filter(seat => !occupiedSeats.includes(seat));
 
-        // ✅ Calculate dealer timer info
+        // Calculate dealer timer info
         let dealerShiftRemainingSeconds = 0;
         let dealerBreakRemainingSeconds = 0;
         let isDealerShiftEnding = false;
@@ -188,14 +190,14 @@ class TableService {
           empty_seats: emptySeats,
           table_status: table.table_status,
           
-          // ✅ DEALER INFO WITH TIMER FIELDS
+          // DEALER INFO WITH TIMER FIELDS
           dealer: table.dealer_id ? {
             dealer_id: table.dealer_id,
             dealer_name: table.dealer_name,
             dealer_status: table.dealer_status,
             shift_status: table.dealer_shift_status,
             
-            // ✅ Timer fields for frontend countdown
+            // Timer fields for frontend countdown
             shift_start_time: table.dealer_shift_started_at,
             shift_duration_minutes: table.dealer_shift_duration_minutes,
             shift_ends_at: table.dealer_shift_ends_at,
@@ -229,57 +231,37 @@ class TableService {
 
   /**
    * ✅ FORMAT PLAYER DATA WITH TIME CALCULATIONS
-   * Adds real-time play time, call time remaining, etc.
-   * 
-   * Timer Logic:
-   * - PLAYING: Count UP from seated_at (add played_time_before_break if resuming)
-   * - ON BREAK: Pause play timer, show break countdown
-   * - CALL TIME: Show call time countdown
    */
   formatPlayerData(player) {
     const now = new Date();
     const seatedAt = new Date(player.seated_at);
     const minimumPlayUntil = player.minimum_play_until ? new Date(player.minimum_play_until) : null;
     
-    // ✅ CRITICAL: Calculate total played time correctly
-    // played_time_before_break stores seconds played before the last break
     const playedBeforeBreakSeconds = parseInt(player.played_time_before_break) || 0;
     
     let totalPlayedSeconds = 0;
     let currentSessionSeconds = 0;
     
     if (player.player_status === 'playing') {
-      // Player is actively playing
-      // ✅ If player has resumed from break, use last_timer_update as the session start
-      // Otherwise use seated_at for initial session
       const sessionStart = player.last_timer_update 
         ? new Date(player.last_timer_update) 
         : seatedAt;
       
-      // Current session time = now - session start (resume time or initial seat time)
       currentSessionSeconds = Math.floor((now - sessionStart) / 1000);
-      
-      // ✅ Total = accumulated (played_time_before_break) + current session
       totalPlayedSeconds = playedBeforeBreakSeconds + currentSessionSeconds;
     } else if (player.player_status === 'on_break') {
-      // Player is on break - timer is paused
-      // played_time_before_break is the time they played before this break
       totalPlayedSeconds = playedBeforeBreakSeconds;
     } else if (player.player_status === 'call_time_active') {
-      // Call time active - use accumulated time
       totalPlayedSeconds = playedBeforeBreakSeconds;
     }
     
     const playedMinutes = Math.floor(totalPlayedSeconds / 60);
     
-    // Calculate remaining minimum time
     const remainingMs = minimumPlayUntil ? minimumPlayUntil - now : 0;
     const remainingMinutes = Math.max(0, Math.floor(remainingMs / (1000 * 60)));
     
-    // Can player call time?
     const canCallTime = playedMinutes >= (player.minimum_play_time || 120);
     
-    // Call time calculations
     let callTimeRemaining = null;
     let callTimeRemainingSeconds = null;
     let mustLeaveIn = null;
@@ -295,7 +277,6 @@ class TableService {
       }
     }
     
-    // Break calculations
     let breakRemaining = null;
     let breakRemainingSeconds = null;
     if (player.player_status === 'on_break' && player.break_ends_at) {
@@ -313,34 +294,28 @@ class TableService {
       seat_number: player.seat_number,
       buy_in_amount: parseFloat(player.buy_in_amount),
       
-      // Status flags
       buy_in_status: player.buy_in_status,
       player_status: player.player_status,
       play_timer_status: player.play_timer_status,
       
-      // Confirmation request
       confirmation_request_id: player.confirmation_request_id,
       confirmation_status: player.confirmation_status,
       
-      // ✅ TIME TRACKING (for frontend timer hook)
       seated_at: player.seated_at,
-      last_timer_update: player.last_timer_update,  // When timer was last updated (resume time)
+      last_timer_update: player.last_timer_update,
       
-      // ✅ TOTAL PLAYED (accumulated + current session)
-      total_played_seconds: totalPlayedSeconds,                      // ✅ For frontend timer
-      played_time_before_break: playedBeforeBreakSeconds,            // ✅ For resume calculation
+      total_played_seconds: totalPlayedSeconds,
+      played_time_before_break: playedBeforeBreakSeconds,
       
       played_minutes: playedMinutes,
       played_hours: Math.floor(playedMinutes / 60),
       played_mins: playedMinutes % 60,
       
-      // Minimum play time
       minimum_play_time: player.minimum_play_time,
       minimum_play_until: player.minimum_play_until,
       remaining_minutes: remainingMinutes,
       can_call_time: canCallTime,
       
-      // Call time
       call_time_active: player.player_status === 'call_time_active',
       call_time_requested_at: player.call_time_requested_at,
       call_time_duration: player.call_time_duration,
@@ -349,14 +324,12 @@ class TableService {
       call_time_remaining_seconds: callTimeRemainingSeconds,
       must_leave_in_minutes: mustLeaveIn,
       
-      // Break
       on_break: player.player_status === 'on_break',
       break_started_at: player.break_started_at,
       break_ends_at: player.break_ends_at,
       break_remaining_minutes: breakRemaining,
       break_remaining_seconds: breakRemainingSeconds,
       
-      // Flags
       needs_auto_removal: mustLeaveIn === 0,
       overdue: player.buy_in_status === 'AWAITING_CONFIRMATION'
     };
@@ -368,7 +341,6 @@ class TableService {
       const { table_id, player_id, seat_number, buy_in_amount } = data;
       const session = await this.getCurrentSession();
   
-      // ✅ Check if seat is free - ONLY check active players
       const seatTaken = await db.select(
         'tbl_table_players',
         '*',
@@ -380,9 +352,8 @@ class TableService {
         throw new Error(`Seat ${seat_number} is already occupied`);
       }
   
-      // Insert player with timer fields (only use existing columns)
       const now = new Date();
-      const minimumPlayTime = 120; // 120 minutes = 2 hours
+      const minimumPlayTime = 120;
       const minimumPlayUntil = new Date(now.getTime() + minimumPlayTime * 60 * 1000);
       
       const result = await db.insert('tbl_table_players', {
@@ -393,13 +364,10 @@ class TableService {
         buy_in_amount,
         buy_in_status: 'AWAITING_CONFIRMATION',
         
-        // Timer status
         player_status: 'playing',
         
-        // Time tracking - use seated_at as the start time
         seated_at: now,
         
-        // Minimum play time
         minimum_play_time: minimumPlayTime,
         minimum_play_until: minimumPlayUntil,
         
@@ -408,7 +376,6 @@ class TableService {
         created_at: now
       });
   
-      // ✅ Update table occupied seats - FIXED
       const currentTable = await db.select('tbl_tables', 'current_occupied_seats', 'table_id = ?', [table_id]);
       const newOccupiedSeats = (currentTable?.current_occupied_seats || 0) + 1;
       
@@ -431,12 +398,14 @@ class TableService {
 
   /**
    * ✅ ASSIGN DEALER TO TABLE
+   * ⚠️ KEY FIX: Check for existing paused shift and RESUME from there
    */
   async assignDealerToTable(tableId, dealerId, userId) {
     try {
       const session = await this.getCurrentSession();
+      const now = new Date();
       
-      // Check if dealer is available
+      // Check if dealer exists
       const dealer = await db.select(
         'tbl_dealers',
         '*',
@@ -448,49 +417,101 @@ class TableService {
         throw new Error('Dealer not found');
       }
       
-      // Check if dealer already assigned to another table
-      const currentAssignment = await db.select(
+      // Check if dealer is already on a table (not just available)
+      const activeOnTable = await db.select(
         'tbl_dealer_shifts',
         '*',
         'dealer_id = ? AND session_id = ? AND shift_status = "on_table"',
         [dealerId, session.session_id]
       );
       
-      if (currentAssignment) {
+      if (activeOnTable) {
         throw new Error('Dealer is already assigned to another table');
       }
+
+      // ✅ KEY FIX: Check for existing shift with PAUSED remaining seconds
+      // This is critical - look for any shift that has paused time to resume
+      const existingShifts = await db.queryAll(
+        `SELECT * FROM tbl_dealer_shifts 
+         WHERE dealer_id = ? 
+         AND session_id = ? 
+         AND shift_paused_remaining_seconds > 0
+         ORDER BY shift_id DESC 
+         LIMIT 1`,
+        [dealerId, session.session_id]
+      );
       
-      // Update table
+      const existingShift = existingShifts && existingShifts.length > 0 ? existingShifts[0] : null;
+
+      console.log('=== ASSIGN DEALER DEBUG ===');
+      console.log('Dealer ID:', dealerId);
+      console.log('Table ID:', tableId);
+      console.log('Session ID:', session.session_id);
+      console.log('Existing shift with paused time:', existingShift);
+
+      let shiftEndsAt;
+      let shiftRemainingSeconds;
+      let resumedFromPause = false;
+
+      if (existingShift && existingShift.shift_paused_remaining_seconds > 0) {
+        // ✅ RESUME from paused time
+        shiftRemainingSeconds = existingShift.shift_paused_remaining_seconds;
+        shiftEndsAt = new Date(now.getTime() + shiftRemainingSeconds * 1000);
+        resumedFromPause = true;
+
+        console.log('✅ RESUMING shift with', shiftRemainingSeconds, 'seconds =', Math.floor(shiftRemainingSeconds/60), 'minutes');
+
+        // Update existing shift to resume - clear paused state
+        await db.update(
+          'tbl_dealer_shifts',
+          {
+            table_id: tableId,
+            shift_status: 'on_table',
+            shift_timer_status: 'counting',
+            shift_ends_at: shiftEndsAt,
+            current_shift_started_at: now,
+            shift_paused_remaining_seconds: 0,  // ✅ Clear paused state
+            break_started_at: null,
+            break_ends_at: null,
+            break_duration_minutes: null,
+            last_timer_update: now
+          },
+          'shift_id = ?',
+          [existingShift.shift_id]
+        );
+      } else {
+        // ✅ START NEW SHIFT (no paused time found)
+        const shiftDuration = 60; // 60 minutes standard shift
+        shiftRemainingSeconds = shiftDuration * 60;
+        shiftEndsAt = new Date(now.getTime() + shiftRemainingSeconds * 1000);
+
+        console.log('✅ STARTING NEW shift with', shiftDuration, 'minutes');
+
+        // Create new dealer shift
+        await db.insert('tbl_dealer_shifts', {
+          session_id: session.session_id,
+          dealer_id: dealerId,
+          table_id: tableId,
+          shift_status: 'on_table',
+          shift_timer_status: 'counting',
+          shift_start_time: now,
+          current_shift_started_at: now,
+          shift_duration_minutes: shiftDuration,
+          shift_duration_remaining_seconds: shiftRemainingSeconds,
+          shift_ends_at: shiftEndsAt,
+          shift_paused_remaining_seconds: 0,
+          assigned_by: userId,
+          last_timer_update: now
+        });
+      }
+      
+      // Update table with dealer
       await db.update(
         'tbl_tables',
         { dealer_id: dealerId },
         'table_id = ?',
         [tableId]
       );
-      
-      // Create/Update dealer shift with timer fields
-      const shiftDuration = 60; // 60 minutes standard shift
-      const now = new Date();
-      const shiftEndsAt = new Date(now.getTime() + shiftDuration * 60 * 1000);
-      
-      await db.insert('tbl_dealer_shifts', {
-        session_id: session.session_id,
-        dealer_id: dealerId,
-        table_id: tableId,
-        shift_status: 'on_table',
-        
-        // ✅ Timer fields for countdown
-        shift_timer_status: 'counting',  // ✅ FIX: Should be 'counting' not 'playing'
-        shift_start_time: now,
-        current_shift_started_at: now,
-        shift_duration_minutes: shiftDuration,
-        shift_duration_remaining_seconds: shiftDuration * 60,
-        shift_ends_at: shiftEndsAt,
-        shift_paused_remaining_seconds: 0,  // ✅ NEW: Initialize to 0 when assigned
-        
-        assigned_by: userId,
-        last_timer_update: now
-      });
       
       // Update dealer status
       await db.update(
@@ -502,7 +523,12 @@ class TableService {
       
       return {
         success: true,
-        message: `Dealer ${dealer.dealer_name} assigned to table`
+        shift_ends_at: shiftEndsAt,
+        shift_remaining_seconds: shiftRemainingSeconds,
+        resumed_from_pause: resumedFromPause,
+        message: resumedFromPause
+          ? `Dealer ${dealer.dealer_name} assigned. Shift RESUMED with ${Math.floor(shiftRemainingSeconds / 60)} minutes remaining.`
+          : `Dealer ${dealer.dealer_name} assigned. New 60 minute shift started.`
       };
     } catch (error) {
       throw error;
@@ -511,6 +537,7 @@ class TableService {
 
   /**
    * ✅ REMOVE DEALER FROM TABLE (Send to break)
+   * Pauses the shift timer and saves remaining time
    */
   async removeDealerFromTable(tableId, userId) {
     try {
@@ -521,6 +548,7 @@ class TableService {
       }
       
       const session = await this.getCurrentSession();
+      const now = new Date();
       
       // Get current shift to calculate remaining time
       const currentShift = await db.select(
@@ -530,29 +558,32 @@ class TableService {
         [table.dealer_id, session.session_id]
       );
       
-      // Calculate remaining shift time to resume later
+      // ✅ Calculate remaining shift time to PAUSE
       let shiftPausedRemainingSeconds = 0;
       if (currentShift && currentShift.shift_ends_at) {
-        const now = new Date();
         const shiftEndsAt = new Date(currentShift.shift_ends_at);
         shiftPausedRemainingSeconds = Math.max(0, Math.floor((shiftEndsAt - now) / 1000));
       }
+
+      console.log('=== BREAK DEBUG ===');
+      console.log('Pausing shift with', shiftPausedRemainingSeconds, 'seconds =', Math.floor(shiftPausedRemainingSeconds/60), 'minutes');
       
       // Calculate break end time (15 minutes)
       const breakDuration = 15;
-      const breakStartedAt = new Date();
+      const breakStartedAt = now;
       const breakEndsAt = new Date(breakStartedAt.getTime() + breakDuration * 60 * 1000);
       
-      // Update dealer shift to on_break with break countdown
+      // Update dealer shift to on_break - SAVE the paused remaining time
       await db.update(
         'tbl_dealer_shifts',
         {
+          table_id: null,  // Remove from table
           shift_status: 'on_break',
-          shift_timer_status: 'paused',  // ✅ NEW: Mark timer as paused
+          shift_timer_status: 'paused',
           break_started_at: breakStartedAt,
           break_duration_minutes: breakDuration,
           break_ends_at: breakEndsAt,
-          shift_paused_remaining_seconds: shiftPausedRemainingSeconds
+          shift_paused_remaining_seconds: shiftPausedRemainingSeconds  // ✅ Save paused time
         },
         'dealer_id = ? AND session_id = ? AND shift_status = "on_table"',
         [table.dealer_id, session.session_id]
@@ -577,7 +608,8 @@ class TableService {
       return {
         success: true,
         break_ends_at: breakEndsAt,
-        message: 'Dealer sent on break'
+        shift_paused_remaining_seconds: shiftPausedRemainingSeconds,
+        message: `Dealer sent on break. Shift PAUSED with ${Math.floor(shiftPausedRemainingSeconds / 60)} minutes remaining.`
       };
     } catch (error) {
       throw error;
@@ -589,7 +621,6 @@ class TableService {
    */
   async closeTable(tableId, userId) {
     try {
-      // Check if table has active players
       const activePlayers = await db.selectAll(
         'tbl_table_players',
         'player_id',
@@ -601,13 +632,11 @@ class TableService {
         throw new Error(`Cannot close table. ${activePlayers.length} players still seated.`);
       }
       
-      // Remove dealer if assigned
       const table = await db.select('tbl_tables', 'dealer_id', 'table_id = ?', [tableId]);
       if (table && table.dealer_id) {
         await this.removeDealerFromTable(tableId, userId);
       }
       
-      // Close table
       await db.update(
         'tbl_tables',
         { 
@@ -648,14 +677,3 @@ class TableService {
 }
 
 module.exports = new TableService();
-
-
-
-
-
-
-
-
-
-
-
