@@ -347,8 +347,13 @@ class PlayerService {
 
       // Calculate current played time
       const now = new Date();
+      
+      // ✅ FIXED: Use last_timer_update (resume time) instead of seated_at to avoid counting break time
       const seatedAt = new Date(player.seated_at);
-      const currentSessionSeconds = Math.floor((now - seatedAt) / 1000);
+      const sessionStart = player.last_timer_update 
+        ? new Date(player.last_timer_update) 
+        : seatedAt;
+      const currentSessionSeconds = Math.max(0, Math.floor((now - sessionStart) / 1000));
       const accumulatedSeconds = parseInt(player.played_time_before_break) || 0;
       const totalPlayedSeconds = accumulatedSeconds + currentSessionSeconds;
       const totalPlayedMinutes = Math.floor(totalPlayedSeconds / 60);

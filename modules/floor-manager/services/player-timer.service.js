@@ -336,23 +336,31 @@ class PlayerTimerService {
       if (player.player_status === 'call_time_active') throw new Error('Call time already active');
 
       const now = new Date();
-      const minimumPlayUntil = new Date(player.minimum_play_until);
+      
+      // ✅ CALCULATE ACTUAL PLAYED TIME (accounts for breaks and resume)
+      const playedBeforeBreakSeconds = parseInt(player.played_time_before_break) || 0;
+      let currentSessionSeconds = 0;
+      
+      if (player.player_status === 'playing') {
+        const sessionStart = player.last_timer_update 
+          ? new Date(player.last_timer_update) 
+          : new Date(player.seated_at);
+        currentSessionSeconds = Math.max(0, Math.floor((now - sessionStart) / 1000));
+      }
+      
+      const totalPlayedSeconds = playedBeforeBreakSeconds + currentSessionSeconds;
+      const totalPlayedMinutes = Math.floor(totalPlayedSeconds / 60);
+      const minimumPlayTime = player.minimum_play_time || 120;
 
-      // Check if minimum time has passed
-      if (now < minimumPlayUntil) {
-        const remainingMs = minimumPlayUntil - now;
-        const remainingMinutes = Math.floor(remainingMs / (1000 * 60));
-        throw new Error(`Must play ${remainingMinutes} more minutes before call time`);
+      // ✅ Check if minimum play time has been reached
+      if (totalPlayedMinutes < minimumPlayTime) {
+        const remainingMinutes = minimumPlayTime - totalPlayedMinutes;
+        throw new Error(`Player must play ${remainingMinutes} more minutes before calling time`);
       }
 
       // ✅ SET CALL TIME
       const callTimeDuration = 60; // 60 minutes
       const callTimeEndsAt = new Date(now.getTime() + callTimeDuration * 60 * 1000);
-
-      // Calculate total played time
-      const playStartTime = new Date(player.play_start_time);
-      const totalPlayedMs = now - playStartTime;
-      const totalPlayedSeconds = Math.floor(totalPlayedMs / 1000);
 
       await db.update(
         'tbl_table_players',

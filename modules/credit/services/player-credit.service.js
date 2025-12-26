@@ -31,6 +31,7 @@ class PlayerCreditService {
     if (session) {
       await db.insert('tbl_credit_usage_log', {
         player_id: playerId,
+        player_name: player.player_name,
         session_id: session.session_id,
         credit_limit_at_time: limit,
         credit_used: 0,

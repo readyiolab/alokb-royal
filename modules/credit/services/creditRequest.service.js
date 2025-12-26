@@ -55,6 +55,11 @@ class CreditRequestService {
 
       const player = await playerService.getPlayer(playerId);
 
+      // ✅ Ensure player_name is available (fallback to data if getPlayer() didn't return it)
+      if (!player.player_name && data.player_name) {
+        player.player_name = data.player_name;
+      }
+
       // ✅ VALIDATE CHIP BREAKDOWN (Required for tracking)
       if (!data.chip_breakdown) {
         throw new Error('Chip breakdown is required. Please specify which chips to give for credit.');
