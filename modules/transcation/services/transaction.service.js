@@ -1394,6 +1394,7 @@ class TransactionService {
     const creditResult = await db.insert("tbl_credits", {
       session_id: session.session_id,
       player_id: data.player_id,
+      player_name: data.player_name || "",
 
       // Store chip breakdown for settlement tracking
       chips_100: data.chip_breakdown.chips_100 || 0,

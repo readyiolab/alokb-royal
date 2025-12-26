@@ -164,6 +164,7 @@ class CreditRequestService {
       // ✅ USE TRANSACTION SERVICE to issue credit with chip breakdown
       const result = await transactionService.issueCredit({
         player_id: playerId,
+        player_name: player.player_name,
         credit_amount: requestedAmount,
         chips_amount: chipsAmount,
         chip_breakdown: data.chip_breakdown,  // ✅ Pass chip breakdown
@@ -335,6 +336,7 @@ class CreditRequestService {
 
       const result = await transactionService.issueCredit({
         player_id: request.player_id,
+         player_name: request.player_name,
         credit_amount: request.requested_amount,
         chips_amount: request.chips_amount,
         chip_breakdown: chipBreakdown,  // ✅ Use stored chip breakdown
